@@ -1,8 +1,8 @@
 <?php
 
 /*
- * AccountController.php
- * Copyright (c) 2022 james@firefly-iii.org
+ * ShowController.php
+ * Copyright (c) 2024 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -22,11 +22,23 @@
 
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V2\Controllers\Search;
+namespace FireflyIII\Api\V2\Controllers\Model\Transaction;
 
 use FireflyIII\Api\V2\Controllers\Controller;
+use FireflyIII\Models\TransactionGroup;
+use FireflyIII\Transformers\V2\TransactionGroupTransformer;
+use Illuminate\Http\JsonResponse;
 
-/**
- * Class AccountController
- */
-class AccountController extends Controller {}
+class ShowController extends Controller
+{
+    /**
+     * TODO this endpoint is not yet reachable.
+     */
+    public function show(TransactionGroup $transactionGroup): JsonResponse
+    {
+        $transformer = new TransactionGroupTransformer();
+        $transformer->setParameters($this->parameters);
+
+        return response()->api($this->jsonApiObject('transactions', $transactionGroup, $transformer))->header('Content-Type', self::CONTENT_TYPE);
+    }
+}

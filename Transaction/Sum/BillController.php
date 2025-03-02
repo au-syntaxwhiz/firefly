@@ -1,8 +1,8 @@
 <?php
 
 /*
- * AccountController.php
- * Copyright (c) 2022 james@firefly-iii.org
+ * BillController.php
+ * Copyright (c) 2023 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -22,11 +22,11 @@
 
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V2\Controllers\Search;
+namespace FireflyIII\Api\V2\Controllers\Transaction\Sum;
 
 use FireflyIII\Api\V2\Controllers\Controller;
 
 /**
- * Class AccountController
+ * Class BillController
  */
-class AccountController extends Controller {}
+class BillController extends Controller {}

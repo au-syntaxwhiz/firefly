@@ -1,8 +1,8 @@
 <?php
 
-/**
+/*
  * Controller.php
- * Copyright (c) 2019 james@firefly-iii.org
+ * Copyright (c) 2022 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -22,22 +22,15 @@
 
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V1\Controllers;
+namespace FireflyIII\Api\V2\Controllers;
 
 use Carbon\Carbon;
+use Carbon\Exceptions\InvalidDateException;
 use Carbon\Exceptions\InvalidFormatException;
-use FireflyIII\Exceptions\BadHttpHeaderException;
-use FireflyIII\Models\Preference;
-use FireflyIII\Models\TransactionCurrency;
-use FireflyIII\Support\Facades\Amount;
-use FireflyIII\Support\Facades\Steam;
+use FireflyIII\Enums\UserRoleEnum;
 use FireflyIII\Support\Http\Api\ValidatesUserGroupTrait;
 use FireflyIII\Transformers\V2\AbstractTransformer;
-use FireflyIII\User;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
-use Illuminate\Foundation\Bus\DispatchesJobs;
-use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Routing\Controller as BaseController;
 use Illuminate\Support\Collection;
@@ -46,55 +39,31 @@ use League\Fractal\Pagination\IlluminatePaginatorAdapter;
 use League\Fractal\Resource\Collection as FractalCollection;
 use League\Fractal\Resource\Item;
 use League\Fractal\Serializer\JsonApiSerializer;
+use Psr\Container\ContainerExceptionInterface;
+use Psr\Container\NotFoundExceptionInterface;
 use Symfony\Component\HttpFoundation\Exception\BadRequestException;
 use Symfony\Component\HttpFoundation\ParameterBag;
 
 /**
- * Class Controller.
+ * Class Controller
  *
  * @SuppressWarnings("PHPMD.CouplingBetweenObjects")
  * @SuppressWarnings("PHPMD.NumberOfChildren")
  */
-abstract class Controller extends BaseController
+class Controller extends BaseController
 {
-    use AuthorizesRequests;
-    use DispatchesJobs;
-    use ValidatesRequests;
     use ValidatesUserGroupTrait;
 
-    protected const string CONTENT_TYPE      = 'application/vnd.api+json';
-    protected const string JSON_CONTENT_TYPE = 'application/json';
-
-    /** @var array<int, string> */
-    protected array        $allowedSort;
+    protected const string CONTENT_TYPE     = 'application/vnd.api+json';
+    protected array        $acceptedRoles   = [UserRoleEnum::READ_ONLY];
     protected ParameterBag $parameters;
-    protected bool        $convertToNative   = false;
-    protected array $accepts                 = ['application/json', 'application/vnd.api+json'];
-    protected TransactionCurrency $nativeCurrency;
+    protected bool         $convertToNative = false;
 
-    /**
-     * Controller constructor.
-     */
     public function __construct()
     {
-        // get global parameters
-        $this->allowedSort = config('firefly.allowed_sort_parameters');
         $this->middleware(
             function ($request, $next) {
                 $this->parameters = $this->getParameters();
-                if (auth()->check()) {
-                    $language              = Steam::getLanguage();
-                    $this->convertToNative = Amount::convertToNative();
-                    $this->nativeCurrency  = Amount::getNativeCurrency();
-                    app()->setLocale($language);
-                }
-
-
-                // filter down what this endpoint accepts.
-                if (!$request->accepts($this->accepts)) {
-                    throw new BadHttpHeaderException(sprintf('Sorry, Accept header "%s" is not something this endpoint can provide.', $request->header('Accept')));
-                }
-
 
                 return $next($request);
             }
@@ -102,12 +71,25 @@ abstract class Controller extends BaseController
     }
 
     /**
+     * TODO duplicate from V1 controller
      * Method to grab all parameters from the URL.
+     *
+     * @SuppressWarnings("PHPMD.NPathComplexity")
      */
     private function getParameters(): ParameterBag
     {
         $bag      = new ParameterBag();
-        $page     = (int) request()->get('page');
+        $bag->set('limit', 50);
+
+        try {
+            $page = (int) request()->get('page');
+        } catch (ContainerExceptionInterface|NotFoundExceptionInterface $e) {
+            $page = 1;
+        }
+
+        $integers = ['limit', 'administration'];
+        $dates    = ['start', 'end', 'date'];
+
         if ($page < 1) {
             $page = 1;
         }
@@ -117,9 +99,9 @@ abstract class Controller extends BaseController
         $bag->set('page', $page);
 
         // some date fields:
-        $dates    = ['start', 'end', 'date'];
         foreach ($dates as $field) {
             $date = null;
+            $obj  = null;
 
             try {
                 $date = request()->query->get($field);
@@ -127,133 +109,55 @@ abstract class Controller extends BaseController
                 app('log')->error(sprintf('Request field "%s" contains a non-scalar value. Value set to NULL.', $field));
                 app('log')->error($e->getMessage());
                 app('log')->error($e->getTraceAsString());
-                $value = null;
             }
-            $obj  = null;
             if (null !== $date) {
                 try {
-                    $obj = Carbon::parse((string) $date);
-                } catch (InvalidFormatException $e) {
+                    $obj = Carbon::parse((string) $date, config('app.timezone'));
+                } catch (InvalidDateException|InvalidFormatException $e) {
                     // don't care
-                    app('log')->warning(
-                        sprintf(
-                            'Ignored invalid date "%s" in API controller parameter check: %s',
-                            substr((string) $date, 0, 20),
-                            $e->getMessage()
-                        )
-                    );
+                    app('log')->warning(sprintf('Ignored invalid date "%s" in API v2 controller parameter check: %s', substr((string) $date, 0, 20), $e->getMessage()));
                 }
+                // out of range? set to null.
+                if (null !== $obj && ($obj->year <= 1900 || $obj->year > 2099)) {
+                    app('log')->warning(sprintf('Refuse to use date "%s" in API v2 controller parameter check: %s', $field, $obj->toAtomString()));
+                    $obj = null;
+                }
+            }
+            if (null !== $date && 'end' === $field) {
+                $obj->endOfDay();
             }
             $bag->set($field, $obj);
         }
 
         // integer fields:
-        $integers = ['limit'];
         foreach ($integers as $integer) {
             try {
                 $value = request()->query->get($integer);
             } catch (BadRequestException $e) {
                 app('log')->error(sprintf('Request field "%s" contains a non-scalar value. Value set to NULL.', $integer));
                 app('log')->error($e->getMessage());
-                app('log')->error($e->getTraceAsString());
                 $value = null;
             }
             if (null !== $value) {
-                $value = (int) $value;
-                if ($value < 1) {
-                    $value = 1;
-                }
-                if ($value > 2 ** 16) {
-                    $value = 2 ** 16;
-                }
-
-                $bag->set($integer, $value);
+                $bag->set($integer, (int) $value);
             }
-            if (null === $value
-                && 'limit' === $integer // @phpstan-ignore-line
-                && auth()->check()) {
+            if (null === $value && 'limit' === $integer && auth()->check()) {
                 // set default for user:
-                /** @var User $user */
-                $user     = auth()->user();
-
-                /** @var Preference $pageSize */
-                $pageSize = (int) app('preferences')->getForUser($user, 'listPageSize', 50)->data;
+                $pageSize = (int) app('preferences')->getForUser(auth()->user(), 'listPageSize', 50)->data;
                 $bag->set($integer, $pageSize);
             }
         }
 
         // sort fields:
-        return $this->getSortParameters($bag);
-    }
-
-    private function getSortParameters(ParameterBag $bag): ParameterBag
-    {
-        $sortParameters = [];
-
-        try {
-            $param = (string) request()->query->get('sort');
-        } catch (BadRequestException $e) {
-            app('log')->error('Request field "sort" contains a non-scalar value. Value set to NULL.');
-            app('log')->error($e->getMessage());
-            app('log')->error($e->getTraceAsString());
-            $param = '';
-        }
-        if ('' === $param) {
-            return $bag;
-        }
-        $parts          = explode(',', $param);
-        foreach ($parts as $part) {
-            $part      = trim($part);
-            $direction = 'asc';
-            if ('-' === $part[0]) {
-                $part      = substr($part, 1);
-                $direction = 'desc';
-            }
-            if (in_array($part, $this->allowedSort, true)) {
-                $sortParameters[] = [$part, $direction];
-            }
-        }
-        $bag->set('sort', $sortParameters);
+        //   return $this->getSortParameters($bag);
 
         return $bag;
-    }
-
-    /**
-     * Method to help build URL's.
-     */
-    final protected function buildParams(): string
-    {
-        $return = '?';
-        $params = [];
-        foreach ($this->parameters as $key => $value) {
-            if ('page' === $key) {
-                continue;
-            }
-            if ($value instanceof Carbon) {
-                $params[$key] = $value->format('Y-m-d');
-
-                continue;
-            }
-            $params[$key] = $value;
-        }
-
-        return $return.http_build_query($params);
-    }
-
-    final protected function getManager(): Manager
-    {
-        // create some objects:
-        $manager = new Manager();
-        $baseUrl = request()->getSchemeAndHttpHost().'/api/v1';
-        $manager->setSerializer(new JsonApiSerializer($baseUrl));
-
-        return $manager;
     }
 
     final protected function jsonApiList(string $key, LengthAwarePaginator $paginator, AbstractTransformer $transformer): array
     {
         $manager  = new Manager();
-        $baseUrl  = sprintf('%s/api/v1/', request()->getSchemeAndHttpHost());
+        $baseUrl  = request()->getSchemeAndHttpHost().'/api/v2';
 
         // TODO add stuff to path?
 
@@ -281,7 +185,7 @@ abstract class Controller extends BaseController
     {
         // create some objects:
         $manager  = new Manager();
-        $baseUrl  = sprintf('%s/api/v1', request()->getSchemeAndHttpHost());
+        $baseUrl  = request()->getSchemeAndHttpHost().'/api/v2';
         $manager->setSerializer(new JsonApiSerializer($baseUrl));
 
         $transformer->collectMetaData(new Collection([$object]));

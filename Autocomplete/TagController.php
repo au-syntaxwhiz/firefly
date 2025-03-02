@@ -1,8 +1,8 @@
 <?php
 
-/**
- * TagController.php
- * Copyright (c) 2020 james@firefly-iii.org
+/*
+ * CategoryController.php
+ * Copyright (c) 2024 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -22,13 +22,12 @@
 
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V1\Controllers\Autocomplete;
+namespace FireflyIII\Api\V2\Controllers\Autocomplete;
 
-use FireflyIII\Api\V1\Controllers\Controller;
-use FireflyIII\Api\V1\Requests\Autocomplete\AutocompleteRequest;
+use FireflyIII\Api\V2\Controllers\Controller;
+use FireflyIII\Api\V2\Request\Autocomplete\AutocompleteRequest;
 use FireflyIII\Models\Tag;
-use FireflyIII\Repositories\Tag\TagRepositoryInterface;
-use FireflyIII\User;
+use FireflyIII\Repositories\UserGroups\Tag\TagRepositoryInterface;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -39,17 +38,15 @@ class TagController extends Controller
     private TagRepositoryInterface $repository;
 
     /**
-     * TagController constructor.
+     * AccountController constructor.
      */
     public function __construct()
     {
         parent::__construct();
         $this->middleware(
             function ($request, $next) {
-                /** @var User $user */
-                $user             = auth()->user();
                 $this->repository = app(TagRepositoryInterface::class);
-                $this->repository->setUser($user);
+                $this->repository->setUserGroup($this->validateUserGroup($request));
 
                 return $next($request);
             }
@@ -57,24 +54,24 @@ class TagController extends Controller
     }
 
     /**
-     * This endpoint is documented at:
-     * * https://api-docs.firefly-iii.org/?urls.primaryName=2.0.0%20(v1)#/autocomplete/getTagAC
+     * Documentation: https://api-docs.firefly-iii.org/?urls.primaryName=2.1.0%20(v2)#/autocomplete/getTagsAC
      */
     public function tags(AutocompleteRequest $request): JsonResponse
     {
-        $data   = $request->getData();
-        $result = $this->repository->searchTags($data['query'], $this->parameters->get('limit'));
-        $array  = [];
+        $queryParameters = $request->getParameters();
+        $result          = $this->repository->searchTag($queryParameters['query'], $queryParameters['size']);
+        $filtered        = $result->map(
+            static function (Tag $item) {
+                return [
+                    'id'    => (string) $item->id,
+                    'title' => $item->tag,
+                    'value' => (string) $item->id,
+                    'label' => $item->tag,
+                    'meta'  => [],
+                ];
+            }
+        );
 
-        /** @var Tag $tag */
-        foreach ($result as $tag) {
-            $array[] = [
-                'id'   => (string) $tag->id,
-                'name' => $tag->tag,
-                'tag'  => $tag->tag,
-            ];
-        }
-
-        return response()->api($array);
+        return response()->json($filtered);
     }
 }

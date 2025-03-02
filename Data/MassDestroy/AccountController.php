@@ -22,7 +22,7 @@
 
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V2\Controllers\Search;
+namespace FireflyIII\Api\V2\Controllers\Data\MassDestroy;
 
 use FireflyIII\Api\V2\Controllers\Controller;
 
