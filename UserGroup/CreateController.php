@@ -1,7 +1,7 @@
 <?php
 
 /*
- * IndexController.php
+ * CreateController.php
  * Copyright (c) 2024 james@firefly-iii.org.
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
@@ -26,23 +26,23 @@ namespace FireflyIII\Http\Controllers\UserGroup;
 
 use FireflyIII\Http\Controllers\Controller;
 use Illuminate\Contracts\View\Factory;
-use Illuminate\Http\Request;
-use Illuminate\View\View;
+use Illuminate\Contracts\View\View;
+use Illuminate\Foundation\Application;
 
-class IndexController extends Controller
+class CreateController extends Controller
 {
     /**
-     * Show all administrations.
-     *
-     * @return Factory|View
+     * @return Application|Factory|\Illuminate\Contracts\Foundation\Application|View
      */
-    public function index(Request $request)
+    public function create()
     {
         $title         = (string) trans('firefly.administrations_page_title');
-        $subTitle      = (string) trans('firefly.administrations_page_sub_title');
+        $subTitle      = (string) trans('firefly.administrations_page_create_sub_title');
         $mainTitleIcon = 'fa-book';
         app('log')->debug(sprintf('Now at %s', __METHOD__));
 
-        return view('administrations.index')->with(compact('title', 'subTitle', 'mainTitleIcon'));
+        return view('administrations.create') // @phpstan-ignore-line
+            ->with(compact('title', 'subTitle', 'mainTitleIcon'))
+        ;
     }
 }

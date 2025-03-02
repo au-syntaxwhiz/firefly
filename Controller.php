@@ -1,8 +1,8 @@
 <?php
 
-/*
+/**
  * Controller.php
- * Copyright (c) 2022 james@firefly-iii.org
+ * Copyright (c) 2019 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -19,179 +19,128 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V2\Controllers;
+namespace FireflyIII\Http\Controllers;
 
-use Carbon\Carbon;
-use Carbon\Exceptions\InvalidDateException;
-use Carbon\Exceptions\InvalidFormatException;
-use FireflyIII\Enums\UserRoleEnum;
-use FireflyIII\Support\Http\Api\ValidatesUserGroupTrait;
-use FireflyIII\Transformers\V2\AbstractTransformer;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Pagination\LengthAwarePaginator;
+use FireflyIII\Models\TransactionCurrency;
+use FireflyIII\Support\Facades\Amount;
+use FireflyIII\Support\Facades\Steam;
+use FireflyIII\Support\Http\Controllers\RequestInformation;
+use FireflyIII\Support\Http\Controllers\UserNavigation;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Foundation\Bus\DispatchesJobs;
+use Illuminate\Foundation\Validation\ValidatesRequests;
 use Illuminate\Routing\Controller as BaseController;
-use Illuminate\Support\Collection;
-use League\Fractal\Manager;
-use League\Fractal\Pagination\IlluminatePaginatorAdapter;
-use League\Fractal\Resource\Collection as FractalCollection;
-use League\Fractal\Resource\Item;
-use League\Fractal\Serializer\JsonApiSerializer;
-use Psr\Container\ContainerExceptionInterface;
-use Psr\Container\NotFoundExceptionInterface;
-use Symfony\Component\HttpFoundation\Exception\BadRequestException;
-use Symfony\Component\HttpFoundation\ParameterBag;
+use Illuminate\Support\Facades\View;
+use Route;
 
 /**
- * Class Controller
+ * Class Controller.
  *
  * @SuppressWarnings("PHPMD.CouplingBetweenObjects")
  * @SuppressWarnings("PHPMD.NumberOfChildren")
  */
-class Controller extends BaseController
+abstract class Controller extends BaseController
 {
-    use ValidatesUserGroupTrait;
+    use AuthorizesRequests;
+    use DispatchesJobs;
+    use RequestInformation;
+    use UserNavigation;
+    use ValidatesRequests;
 
-    protected const string CONTENT_TYPE     = 'application/vnd.api+json';
-    protected array        $acceptedRoles   = [UserRoleEnum::READ_ONLY];
-    protected ParameterBag $parameters;
-    protected bool         $convertToNative = false;
+    // fails on PHP < 8.4
+    public protected(set) string $name;
 
+    protected string $dateTimeFormat;
+    protected string $monthAndDayFormat;
+    protected bool $convertToNative = false;
+    protected ?TransactionCurrency $defaultCurrency;
+    protected string $monthFormat;
+    protected string $redirectUrl = '/';
+
+    /**
+     * Controller constructor.
+     */
     public function __construct()
     {
+        // is site a demo site?
+        $isDemoSiteConfig = app('fireflyconfig')->get('is_demo_site', config('firefly.configuration.is_demo_site', false));
+        $isDemoSite       = (bool) $isDemoSiteConfig->data;
+        View::share('IS_DEMO_SITE', $isDemoSite);
+        View::share('DEMO_USERNAME', config('firefly.demo_username'));
+        View::share('DEMO_PASSWORD', config('firefly.demo_password'));
+        View::share('FF_VERSION', config('firefly.version'));
+
+        // is webhooks enabled?
+        View::share('featuringWebhooks', true === config('firefly.feature_flags.webhooks') && true === config('firefly.allow_webhooks'));
+
+        // share custom auth guard info.
+        $authGuard = config('firefly.authentication_guard');
+        $logoutUrl = config('firefly.custom_logout_url');
+
+        // overrule v2 layout back to v1.
+        if ('true' === request()->get('force_default_layout') && 'v2' === config('view.layout')) {
+            View::getFinder()->setPaths([realpath(base_path('resources/views'))]); // @phpstan-ignore-line
+        }
+
+        View::share('authGuard', $authGuard);
+        View::share('logoutUrl', $logoutUrl);
+
+        // upload size
+        $maxFileSize = Steam::phpBytes((string) ini_get('upload_max_filesize'));
+        $maxPostSize = Steam::phpBytes((string) ini_get('post_max_size'));
+        $uploadSize  = min($maxFileSize, $maxPostSize);
+        View::share('uploadSize', $uploadSize);
+
+        // share is alpha, is beta
+        $isAlpha = false;
+        $isBeta = false;
+        $isDevelop = false;
+        if (str_contains(config('firefly.version'), 'alpha')) {
+            $isAlpha = true;
+        }
+        if (str_contains(config('firefly.version'), 'develop') || str_contains(config('firefly.version'), 'branch')) {
+            $isDevelop = true;
+        }
+
+        if (str_contains(config('firefly.version'), 'beta')) {
+            $isBeta = true;
+        }
+
+        View::share('FF_IS_ALPHA', $isAlpha);
+        View::share('FF_IS_BETA', $isBeta);
+        View::share('FF_IS_DEVELOP', $isDevelop);
+
         $this->middleware(
-            function ($request, $next) {
-                $this->parameters = $this->getParameters();
+            function ($request, $next): mixed {
+                $locale = Steam::getLocale();
+                // translations for specific strings:
+                $this->monthFormat       = (string) trans('config.month_js', [], $locale);
+                $this->monthAndDayFormat = (string) trans('config.month_and_day_js', [], $locale);
+                $this->dateTimeFormat    = (string) trans('config.date_time_js', [], $locale);
+                $darkMode                = 'browser';
+                $this->defaultCurrency   =null;
+                // get shown-intro-preference:
+                if (auth()->check()) {
+                    $this->defaultCurrency   = Amount::getNativeCurrency();
+                    $language  = Steam::getLanguage();
+                    $locale    = Steam::getLocale();
+                    $darkMode  = app('preferences')->get('darkMode', 'browser')->data;
+                    $this->convertToNative =Amount::convertToNative();
+                    $page      = $this->getPageName();
+                    $shownDemo = $this->hasSeenDemo();
+                    View::share('language', $language);
+                    View::share('locale', $locale);
+                    View::share('convertToNative', $this->convertToNative);
+                    View::share('shownDemo', $shownDemo);
+                    View::share('current_route_name', $page);
+                    View::share('original_route_name', Route::currentRouteName());
+                }
+                View::share('darkMode', $darkMode);
 
                 return $next($request);
             }
         );
-    }
-
-    /**
-     * TODO duplicate from V1 controller
-     * Method to grab all parameters from the URL.
-     *
-     * @SuppressWarnings("PHPMD.NPathComplexity")
-     */
-    private function getParameters(): ParameterBag
-    {
-        $bag      = new ParameterBag();
-        $bag->set('limit', 50);
-
-        try {
-            $page = (int) request()->get('page');
-        } catch (ContainerExceptionInterface|NotFoundExceptionInterface $e) {
-            $page = 1;
-        }
-
-        $integers = ['limit', 'administration'];
-        $dates    = ['start', 'end', 'date'];
-
-        if ($page < 1) {
-            $page = 1;
-        }
-        if ($page > 2 ** 16) {
-            $page = 2 ** 16;
-        }
-        $bag->set('page', $page);
-
-        // some date fields:
-        foreach ($dates as $field) {
-            $date = null;
-            $obj  = null;
-
-            try {
-                $date = request()->query->get($field);
-            } catch (BadRequestException $e) {
-                app('log')->error(sprintf('Request field "%s" contains a non-scalar value. Value set to NULL.', $field));
-                app('log')->error($e->getMessage());
-                app('log')->error($e->getTraceAsString());
-            }
-            if (null !== $date) {
-                try {
-                    $obj = Carbon::parse((string) $date, config('app.timezone'));
-                } catch (InvalidDateException|InvalidFormatException $e) {
-                    // don't care
-                    app('log')->warning(sprintf('Ignored invalid date "%s" in API v2 controller parameter check: %s', substr((string) $date, 0, 20), $e->getMessage()));
-                }
-                // out of range? set to null.
-                if (null !== $obj && ($obj->year <= 1900 || $obj->year > 2099)) {
-                    app('log')->warning(sprintf('Refuse to use date "%s" in API v2 controller parameter check: %s', $field, $obj->toAtomString()));
-                    $obj = null;
-                }
-            }
-            if (null !== $date && 'end' === $field) {
-                $obj->endOfDay();
-            }
-            $bag->set($field, $obj);
-        }
-
-        // integer fields:
-        foreach ($integers as $integer) {
-            try {
-                $value = request()->query->get($integer);
-            } catch (BadRequestException $e) {
-                app('log')->error(sprintf('Request field "%s" contains a non-scalar value. Value set to NULL.', $integer));
-                app('log')->error($e->getMessage());
-                $value = null;
-            }
-            if (null !== $value) {
-                $bag->set($integer, (int) $value);
-            }
-            if (null === $value && 'limit' === $integer && auth()->check()) {
-                // set default for user:
-                $pageSize = (int) app('preferences')->getForUser(auth()->user(), 'listPageSize', 50)->data;
-                $bag->set($integer, $pageSize);
-            }
-        }
-
-        // sort fields:
-        //   return $this->getSortParameters($bag);
-
-        return $bag;
-    }
-
-    final protected function jsonApiList(string $key, LengthAwarePaginator $paginator, AbstractTransformer $transformer): array
-    {
-        $manager  = new Manager();
-        $baseUrl  = request()->getSchemeAndHttpHost().'/api/v2';
-
-        // TODO add stuff to path?
-
-        $manager->setSerializer(new JsonApiSerializer($baseUrl));
-
-        $objects  = $paginator->getCollection();
-
-        // the transformer, at this point, needs to collect information that ALL items in the collection
-        // require, like meta-data and stuff like that, and save it for later.
-        $objects  = $transformer->collectMetaData($objects);
-        $paginator->setCollection($objects);
-
-        $resource = new FractalCollection($objects, $transformer, $key);
-        $resource->setPaginator(new IlluminatePaginatorAdapter($paginator));
-
-        return $manager->createData($resource)->toArray();
-    }
-
-    /**
-     * Returns a JSON API object and returns it.
-     *
-     * @param array<int, mixed>|Model $object
-     */
-    final protected function jsonApiObject(string $key, array|Model $object, AbstractTransformer $transformer): array
-    {
-        // create some objects:
-        $manager  = new Manager();
-        $baseUrl  = request()->getSchemeAndHttpHost().'/api/v2';
-        $manager->setSerializer(new JsonApiSerializer($baseUrl));
-
-        $transformer->collectMetaData(new Collection([$object]));
-
-        $resource = new Item($object, $transformer, $key);
-
-        return $manager->createData($resource)->toArray();
     }
 }
