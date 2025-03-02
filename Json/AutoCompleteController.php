@@ -1,7 +1,7 @@
 <?php
 
 /**
- * CronController.php
+ * AutoCompleteController.php
  * Copyright (c) 2019 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
@@ -19,27 +19,13 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 declare(strict_types=1);
 
-namespace FireflyIII\Http\Controllers\System;
+namespace FireflyIII\Http\Controllers\Json;
 
-use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Contracts\Routing\ResponseFactory;
-use Illuminate\Http\Response;
+use FireflyIII\Http\Controllers\Controller;
 
 /**
- * Class CronController
+ * Class AutoCompleteController.
  */
-class CronController
-{
-    /**
-     * @return Application|Response|ResponseFactory
-     */
-    public function cron()
-    {
-        app('log')->error('The cron endpoint has moved to GET /api/v1/cron/[token]');
-
-        return response('The cron endpoint has moved to GET /api/v1/cron/[token]', 500);
-    }
-}
+class AutoCompleteController extends Controller {}

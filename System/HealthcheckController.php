@@ -1,8 +1,8 @@
 <?php
 
-/**
- * CronController.php
- * Copyright (c) 2019 james@firefly-iii.org
+/*
+ * HealthcheckController.php
+ * Copyright (c) 2021 https://github.com/ajgon
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -19,27 +19,26 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 declare(strict_types=1);
 
 namespace FireflyIII\Http\Controllers\System;
 
-use Illuminate\Contracts\Foundation\Application;
-use Illuminate\Contracts\Routing\ResponseFactory;
+use FireflyIII\Http\Controllers\Controller;
+use FireflyIII\User;
 use Illuminate\Http\Response;
 
 /**
- * Class CronController
+ * Class HealthcheckController.
  */
-class CronController
+class HealthcheckController extends Controller
 {
     /**
-     * @return Application|Response|ResponseFactory
+     * Sends 'OK' info when app is alive
      */
-    public function cron()
+    public function check(): Response
     {
-        app('log')->error('The cron endpoint has moved to GET /api/v1/cron/[token]');
+        User::count(); // sanity check for database health. Will crash if not OK.
 
-        return response('The cron endpoint has moved to GET /api/v1/cron/[token]', 500);
+        return response('OK', 200);
     }
 }
