@@ -1,8 +1,8 @@
 <?php
 
-/*
+/**
  * CategoryController.php
- * Copyright (c) 2023 james@firefly-iii.org
+ * Copyright (c) 2019 james@firefly-iii.org
  *
  * This file is part of Firefly III (https://github.com/firefly-iii).
  *
@@ -19,126 +19,269 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 declare(strict_types=1);
 
-namespace FireflyIII\Api\V2\Controllers\Chart;
+namespace FireflyIII\Http\Controllers\Chart;
 
 use Carbon\Carbon;
-use FireflyIII\Api\V2\Controllers\Controller;
-use FireflyIII\Api\V2\Request\Generic\DateRequest;
-use FireflyIII\Enums\AccountTypeEnum;
-use FireflyIII\Enums\TransactionTypeEnum;
 use FireflyIII\Exceptions\FireflyException;
-use FireflyIII\Helpers\Collector\GroupCollectorInterface;
-use FireflyIII\Repositories\UserGroups\Account\AccountRepositoryInterface;
-use FireflyIII\Repositories\UserGroups\Currency\CurrencyRepositoryInterface;
-use FireflyIII\Support\Http\Api\CleansChartData;
-use FireflyIII\Support\Http\Api\ExchangeRateConverter;
-use FireflyIII\Support\Http\Api\ValidatesUserGroupTrait;
+use FireflyIII\Generator\Chart\Basic\GeneratorInterface;
+use FireflyIII\Http\Controllers\Controller;
+use FireflyIII\Models\Category;
+use FireflyIII\Repositories\Category\CategoryRepositoryInterface;
+use FireflyIII\Repositories\Category\NoCategoryRepositoryInterface;
+use FireflyIII\Repositories\Category\OperationsRepositoryInterface;
+use FireflyIII\Support\CacheProperties;
+use FireflyIII\Support\Chart\Category\FrontpageChartGenerator;
+use FireflyIII\Support\Chart\Category\WholePeriodChartGenerator;
+use FireflyIII\Support\Http\Controllers\AugumentData;
+use FireflyIII\Support\Http\Controllers\ChartGeneration;
+use FireflyIII\Support\Http\Controllers\DateCalculation;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
 
 /**
- * Class BudgetController
+ * Class CategoryController.
  */
 class CategoryController extends Controller
 {
-    use CleansChartData;
-    use ValidatesUserGroupTrait;
+    use AugumentData;
+    use ChartGeneration;
+    use DateCalculation;
 
-    private AccountRepositoryInterface  $accountRepos;
-    private CurrencyRepositoryInterface $currencyRepos;
+    protected GeneratorInterface $generator;
 
+    /**
+     * CategoryController constructor.
+     */
     public function __construct()
     {
         parent::__construct();
-        $this->middleware(
-            function ($request, $next) {
-                $this->accountRepos  = app(AccountRepositoryInterface::class);
-                $this->currencyRepos = app(CurrencyRepositoryInterface::class);
-                $this->accountRepos->setUserGroup($this->validateUserGroup($request));
-
-                return $next($request);
-            }
-        );
+        // create chart generator:
+        $this->generator = app(GeneratorInterface::class);
     }
 
     /**
-     * TODO may be worth to move to a handler but the data is simple enough.
-     * TODO see autoComplete/account controller
+     * Show an overview for a category for all time, per month/week/year.
+     * TODO test method, for category refactor.
      *
      * @throws FireflyException
-     *
-     * @SuppressWarnings("PHPMD.UnusedFormalParameter")
      */
-    public function dashboard(DateRequest $request): JsonResponse
+    public function all(Category $category): JsonResponse
     {
-        Log::debug(sprintf('Created new ExchangeRateConverter in %s', __METHOD__));
-
-        /** @var Carbon $start */
-        $start      = $this->parameters->get('start');
-
-        /** @var Carbon $end */
-        $end        = $this->parameters->get('end');
-        $accounts   = $this->accountRepos->getAccountsByType([AccountTypeEnum::DEBT->value, AccountTypeEnum::LOAN->value, AccountTypeEnum::MORTGAGE->value, AccountTypeEnum::ASSET->value, AccountTypeEnum::DEFAULT->value]);
-        $default    = app('amount')->getNativeCurrency();
-        $converter  = new ExchangeRateConverter();
-        $currencies = [];
-        $return     = [];
-
-        // get journals for entire period:
-        /** @var GroupCollectorInterface $collector */
-        $collector  = app(GroupCollectorInterface::class);
-        $collector->setRange($start, $end)->withAccountInformation();
-        $collector->setXorAccounts($accounts)->withCategoryInformation();
-        $collector->setTypes([TransactionTypeEnum::WITHDRAWAL->value, TransactionTypeEnum::RECONCILIATION->value]);
-        $journals   = $collector->getExtractedJournals();
-
-        /** @var array $journal */
-        foreach ($journals as $journal) {
-            $currencyId                    = (int) $journal['currency_id'];
-            $currency                      = $currencies[$currencyId] ?? $this->currencyRepos->find($currencyId);
-            $currencies[$currencyId]       = $currency;
-            $categoryName                  = null === $journal['category_name'] ? (string) trans('firefly.no_category') : $journal['category_name'];
-            $amount                        = app('steam')->positive($journal['amount']);
-            $nativeAmount                  = $converter->convert($default, $currency, $journal['date'], $amount);
-            $key                           = sprintf('%s-%s', $categoryName, $currency->code);
-            if ((int) $journal['foreign_currency_id'] === $default->id) {
-                $nativeAmount = app('steam')->positive($journal['foreign_amount']);
-            }
-            // create arrays
-            $return[$key] ??= [
-                'label'                          => $categoryName,
-                'currency_id'                    => (string) $currency->id,
-                'currency_code'                  => $currency->code,
-                'currency_name'                  => $currency->name,
-                'currency_symbol'                => $currency->symbol,
-                'currency_decimal_places'        => $currency->decimal_places,
-                'native_currency_id'             => (string) $default->id,
-                'native_currency_code'           => $default->code,
-                'native_currency_name'           => $default->name,
-                'native_currency_symbol'         => $default->symbol,
-                'native_currency_decimal_places' => $default->decimal_places,
-                'period'                         => null,
-                'start'                          => $start->toAtomString(),
-                'end'                            => $end->toAtomString(),
-                'amount'                         => '0',
-                'native_amount'                  => '0',
-            ];
-
-            // add monies
-            $return[$key]['amount']        = bcadd($return[$key]['amount'], $amount);
-            $return[$key]['native_amount'] = bcadd($return[$key]['native_amount'], $nativeAmount);
+        // cache results:
+        $cache                           = new CacheProperties();
+        $cache->addProperty('chart.category.all');
+        $cache->addProperty($category->id);
+        $cache->addProperty($this->convertToNative);
+        if ($cache->has()) {
+            return response()->json($cache->get());
         }
-        $return     = array_values($return);
 
-        // order by native amount
-        usort($return, static function (array $a, array $b) {
-            return (float) $a['native_amount'] < (float) $b['native_amount'] ? 1 : -1;
-        });
-        $converter->summarize();
+        /** @var CategoryRepositoryInterface $repository */
+        $repository                      = app(CategoryRepositoryInterface::class);
+        $start                           = $repository->firstUseDate($category) ?? $this->getDate();
+        $range                           = app('navigation')->getViewRange(false);
+        $start                           = app('navigation')->startOfPeriod($start, $range);
+        $end                             = $this->getDate();
 
-        return response()->json($this->clean($return));
+        /** @var WholePeriodChartGenerator $chartGenerator */
+        $chartGenerator                  = app(WholePeriodChartGenerator::class);
+        $chartGenerator->convertToNative = $this->convertToNative;
+
+        $chartData                       = $chartGenerator->generate($category, $start, $end);
+        $data                            = $this->generator->multiSet($chartData);
+        $cache->store($data);
+
+        return response()->json($data);
+    }
+
+    private function getDate(): Carbon
+    {
+        return today(config('app.timezone'));
+    }
+
+    /**
+     * Shows the category chart on the front page.
+     * TODO test method for category refactor.
+     */
+    public function frontPage(): JsonResponse
+    {
+        $start              = session('start', today(config('app.timezone'))->startOfMonth());
+        $end                = session('end', today(config('app.timezone'))->endOfMonth());
+        // chart properties for cache:
+        $cache              = new CacheProperties();
+        $cache->addProperty($start);
+        $cache->addProperty($end);
+        $cache->addProperty($this->convertToNative);
+        $cache->addProperty('chart.category.frontpage');
+        if ($cache->has()) {
+            return response()->json($cache->get());
+        }
+
+        $frontpageGenerator = new FrontpageChartGenerator($start, $end);
+        $chartData          = $frontpageGenerator->generate();
+        $data               = $this->generator->multiSet($chartData);
+        $cache->store($data);
+
+        return response()->json($data);
+    }
+
+    /**
+     * Chart report.
+     * TODO test method for category refactor.
+     */
+    public function reportPeriod(Category $category, Collection $accounts, Carbon $start, Carbon $end): JsonResponse
+    {
+        $cache = new CacheProperties();
+        $cache->addProperty($start);
+        $cache->addProperty($end);
+        $cache->addProperty('chart.category.period');
+        $cache->addProperty($accounts->pluck('id')->toArray());
+        $cache->addProperty($category);
+        $cache->addProperty($this->convertToNative);
+        if ($cache->has()) {
+            return response()->json($cache->get());
+        }
+        $data  = $this->reportPeriodChart($accounts, $start, $end, $category);
+
+        $cache->store($data);
+
+        return response()->json($data);
+    }
+
+    /**
+     * Generate report chart for either with or without category.
+     */
+    private function reportPeriodChart(Collection $accounts, Carbon $start, Carbon $end, ?Category $category): array
+    {
+
+        $income     = [];
+        $expenses   = [];
+        $categoryId = 0;
+        if (null === $category) {
+            /** @var NoCategoryRepositoryInterface $noCatRepository */
+            $noCatRepository = app(NoCategoryRepositoryInterface::class);
+
+            // this gives us all currencies
+            $expenses        = $noCatRepository->listExpenses($start, $end, $accounts);
+            $income          = $noCatRepository->listIncome($start, $end, $accounts);
+        }
+
+        if (null !== $category) {
+            /** @var OperationsRepositoryInterface $opsRepository */
+            $opsRepository = app(OperationsRepositoryInterface::class);
+            $categoryId    = $category->id;
+            // this gives us all currencies
+            $collection    = new Collection([$category]);
+            $expenses      = $opsRepository->listExpenses($start, $end, $accounts, $collection);
+            $income        = $opsRepository->listIncome($start, $end, $accounts, $collection);
+        }
+        $currencies = array_unique(array_merge(array_keys($income), array_keys($expenses)));
+        $periods    = app('navigation')->listOfPeriods($start, $end);
+        $format     = app('navigation')->preferredCarbonLocalizedFormat($start, $end);
+        $chartData  = [];
+        // make empty data array:
+        // double foreach (bad) to make empty array:
+        foreach ($currencies as $currencyId) {
+            $currencyInfo = $expenses[$currencyId] ?? $income[$currencyId];
+            $outKey       = sprintf('%d-out', $currencyId);
+            $inKey        = sprintf('%d-in', $currencyId);
+            $chartData[$outKey]
+                          = [
+                              'label'           => sprintf('%s (%s)', (string) trans('firefly.spent'), $currencyInfo['currency_name']),
+                              'entries'         => [],
+                              'type'            => 'bar',
+                              'backgroundColor' => 'rgba(219, 68, 55, 0.5)', // red
+                          ];
+
+            $chartData[$inKey]
+                          = [
+                              'label'           => sprintf('%s (%s)', (string) trans('firefly.earned'), $currencyInfo['currency_name']),
+                              'entries'         => [],
+                              'type'            => 'bar',
+                              'backgroundColor' => 'rgba(0, 141, 76, 0.5)', // green
+                          ];
+            // loop empty periods:
+            foreach (array_keys($periods) as $period) {
+                $label                                 = $periods[$period];
+                $chartData[$outKey]['entries'][$label] = '0';
+                $chartData[$inKey]['entries'][$label]  = '0';
+            }
+            // loop income and expenses for this category.:
+            $outSet       = $expenses[$currencyId]['categories'][$categoryId] ?? ['transaction_journals' => []];
+            foreach ($outSet['transaction_journals'] as $journal) {
+                $amount                               = app('steam')->positive($journal['amount']);
+                $date                                 = $journal['date']->isoFormat($format);
+                $chartData[$outKey]['entries'][$date] ??= '0';
+
+                $chartData[$outKey]['entries'][$date] = bcadd($amount, $chartData[$outKey]['entries'][$date]);
+            }
+
+            $inSet        = $income[$currencyId]['categories'][$categoryId] ?? ['transaction_journals' => []];
+            foreach ($inSet['transaction_journals'] as $journal) {
+                $amount                              = app('steam')->positive($journal['amount']);
+                $date                                = $journal['date']->isoFormat($format);
+                $chartData[$inKey]['entries'][$date] ??= '0';
+                $chartData[$inKey]['entries'][$date] = bcadd($amount, $chartData[$inKey]['entries'][$date]);
+            }
+        }
+
+        return $this->generator->multiSet($chartData);
+    }
+
+    /**
+     * Chart for period for transactions without a category.
+     * TODO test me.
+     */
+    public function reportPeriodNoCategory(Collection $accounts, Carbon $start, Carbon $end): JsonResponse
+    {
+        $cache = new CacheProperties();
+        $cache->addProperty($start);
+        $cache->addProperty($end);
+        $cache->addProperty('chart.category.period.no-cat');
+        $cache->addProperty($accounts->pluck('id')->toArray());
+        if ($cache->has()) {
+            return response()->json($cache->get());
+        }
+        $data  = $this->reportPeriodChart($accounts, $start, $end, null);
+
+        $cache->store($data);
+
+        return response()->json($data);
+    }
+
+    /**
+     * Chart for a specific period.
+     * TODO test me, for category refactor.
+     *
+     * @throws FireflyException
+     */
+    public function specificPeriod(Category $category, Carbon $date): JsonResponse
+    {
+        $range          = app('navigation')->getViewRange(false);
+        $start          = app('navigation')->startOfPeriod($date, $range);
+        $end            = session()->get('end');
+        if ($end < $start) {
+            [$end, $start] = [$start, $end];
+        }
+
+        $cache          = new CacheProperties();
+        $cache->addProperty($start);
+        $cache->addProperty($end);
+        $cache->addProperty($category->id);
+        $cache->addProperty('chart.category.period-chart');
+        if ($cache->has()) {
+            return response()->json($cache->get());
+        }
+
+        /** @var WholePeriodChartGenerator $chartGenerator */
+        $chartGenerator = app(WholePeriodChartGenerator::class);
+        $chartData      = $chartGenerator->generate($category, $start, $end);
+        $data           = $this->generator->multiSet($chartData);
+
+        $cache->store($data);
+
+        return response()->json($data);
     }
 }
